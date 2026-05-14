@@ -89,6 +89,7 @@ export async function POST(request: Request) {
     const encoder = new TextEncoder();
     const stream = new ReadableStream({
       async start(controller) {
+        const BATCH_SIZE = 5; // Process 5 submissions concurrently
         const results: Array<{
           submission_id: string;
           theme_score: number;
@@ -97,13 +98,13 @@ export async function POST(request: Request) {
           delivery_score: number;
           total_score: number;
           review_comment: string;
+          _originalIndex: number;
         }> = [];
 
         controller.enqueue(encoder.encode(`data: ${JSON.stringify({ total: submissions.length, progress: 0 })}\n\n`));
 
-        for (let i = 0; i < submissions.length; i++) {
-          const sub = submissions[i];
-
+        // Helper: judge a single submission
+        async function judgeOne(sub: Record<string, string>, index: number) {
           try {
             // Fetch image as base64
             const imageResponse = await fetch(sub.image_url);
@@ -134,7 +135,6 @@ export async function POST(request: Request) {
 
             // Parse response
             let responseText = response.text || '';
-            // Extract JSON from markdown code blocks if present
             const jsonMatch = responseText.match(/```(?:json)?\s*([\s\S]*?)```/);
             if (jsonMatch) {
               responseText = jsonMatch[1].trim();
@@ -142,14 +142,13 @@ export async function POST(request: Request) {
 
             const scores = JSON.parse(responseText);
 
-            // Validate scores
             const theme = Math.min(30, Math.max(0, Math.round(scores.theme_score)));
             const creativity = Math.min(25, Math.max(0, Math.round(scores.creativity_score)));
             const aiUsage = Math.min(25, Math.max(0, Math.round(scores.ai_usage_score)));
             const delivery = Math.min(20, Math.max(0, Math.round(scores.delivery_score)));
             const total = theme + creativity + aiUsage + delivery;
 
-            results.push({
+            return {
               submission_id: sub.id,
               theme_score: theme,
               creativity_score: creativity,
@@ -157,11 +156,12 @@ export async function POST(request: Request) {
               delivery_score: delivery,
               total_score: total,
               review_comment: scores.review_comment || '심사평을 생성하지 못했습니다.',
-            });
+              _originalIndex: index,
+            };
           } catch (err: unknown) {
             const errorMsg = err instanceof Error ? err.message : String(err);
             console.error(`Failed to judge submission ${sub.id}:`, err);
-            results.push({
+            return {
               submission_id: sub.id,
               theme_score: 15,
               creativity_score: 12,
@@ -169,10 +169,29 @@ export async function POST(request: Request) {
               delivery_score: 10,
               total_score: 49,
               review_comment: `AI 심사 중 오류가 발생하여 기본 점수가 부여되었습니다. (상세 에러: ${errorMsg})`,
-            });
+              _originalIndex: index,
+            };
+          }
+        }
+
+        // Process in parallel batches
+        let completed = 0;
+        for (let batchStart = 0; batchStart < submissions.length; batchStart += BATCH_SIZE) {
+          const batch = submissions.slice(batchStart, batchStart + BATCH_SIZE);
+          const batchPromises = batch.map((sub: Record<string, string>, i: number) =>
+            judgeOne(sub, batchStart + i)
+          );
+
+          const batchResults = await Promise.allSettled(batchPromises);
+
+          for (const settled of batchResults) {
+            if (settled.status === 'fulfilled') {
+              results.push(settled.value);
+            }
+            completed++;
           }
 
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ progress: i + 1, total: submissions.length })}\n\n`));
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ progress: completed, total: submissions.length })}\n\n`));
         }
 
         // Calculate rankings
@@ -181,7 +200,7 @@ export async function POST(request: Request) {
           (r as Record<string, unknown>).ranking = i + 1;
         });
 
-        // Delete existing results and insert new ones
+        // Delete existing results and insert new ones in bulk
         const { error: deleteError } = await supabase.from('judge_results').delete().neq('id', '00000000-0000-0000-0000-000000000000');
         if (deleteError) {
           controller.enqueue(encoder.encode(`data: ${JSON.stringify({ error: `DB 삭제 실패: ${deleteError.message}` })}\n\n`));
@@ -189,13 +208,14 @@ export async function POST(request: Request) {
           return;
         }
 
-        for (const result of results) {
-          const { error: upsertError } = await supabase.from('judge_results').upsert(result, { onConflict: 'submission_id' });
-          if (upsertError) {
-            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ error: `DB 저장 실패: ${upsertError.message}` })}\n\n`));
-            controller.close();
-            return;
-          }
+        // Strip internal _originalIndex before saving
+        const dbResults = results.map(({ _originalIndex, ...rest }) => rest);
+
+        const { error: upsertError } = await supabase.from('judge_results').upsert(dbResults, { onConflict: 'submission_id' });
+        if (upsertError) {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ error: `DB 저장 실패: ${upsertError.message}` })}\n\n`));
+          controller.close();
+          return;
         }
 
         controller.enqueue(encoder.encode(`data: ${JSON.stringify({ completed: true, progress: submissions.length, total: submissions.length })}\n\n`));
