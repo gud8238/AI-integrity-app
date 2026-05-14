@@ -59,6 +59,10 @@ export async function POST(request: Request) {
       return Response.json({ error: '인증이 필요합니다.' }, { status: 401 });
     }
 
+    if (!geminiApiKey) {
+      return Response.json({ error: '서버 환경 변수에 GEMINI_API_KEY가 설정되지 않았습니다. Netlify 대시보드에서 추가해주세요.' }, { status: 400 });
+    }
+
     const token = authHeader.replace('Bearer ', '');
     const supabase = createClient(supabaseUrl, supabaseAnonKey, {
       global: { headers: { Authorization: `Bearer ${token}` } },
@@ -179,10 +183,20 @@ export async function POST(request: Request) {
         });
 
         // Delete existing results and insert new ones
-        await supabase.from('judge_results').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+        const { error: deleteError } = await supabase.from('judge_results').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+        if (deleteError) {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ error: `DB 삭제 실패: ${deleteError.message}` })}\n\n`));
+          controller.close();
+          return;
+        }
 
         for (const result of results) {
-          await supabase.from('judge_results').upsert(result, { onConflict: 'submission_id' });
+          const { error: upsertError } = await supabase.from('judge_results').upsert(result, { onConflict: 'submission_id' });
+          if (upsertError) {
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ error: `DB 저장 실패: ${upsertError.message}` })}\n\n`));
+            controller.close();
+            return;
+          }
         }
 
         controller.enqueue(encoder.encode(`data: ${JSON.stringify({ completed: true, progress: submissions.length, total: submissions.length })}\n\n`));

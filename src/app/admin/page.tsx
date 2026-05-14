@@ -159,14 +159,17 @@ export default function AdminPage() {
 
           for (const line of lines) {
             if (line.startsWith('data: ')) {
+              let data;
               try {
-                const data = JSON.parse(line.slice(6));
-                if (data.progress) setProgress(data.progress);
-                if (data.total) setProgressTotal(data.total);
-                if (data.completed) setJudgeCompleted(true);
+                data = JSON.parse(line.slice(6));
               } catch {
-                // skip invalid JSON
+                continue; // skip invalid JSON
               }
+              
+              if (data.error) throw new Error(data.error);
+              if (data.progress) setProgress(data.progress);
+              if (data.total) setProgressTotal(data.total);
+              if (data.completed) setJudgeCompleted(true);
             }
           }
         }
