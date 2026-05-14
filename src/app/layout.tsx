@@ -37,6 +37,11 @@ export default function RootLayout({
         <main className="relative z-10">
           {children}
         </main>
+
+        {/* Footer */}
+        <footer className="site-footer">
+          <p>Mokpo AI·SW Education Experience Center | Designed &amp; Developed by 서찬아</p>
+        </footer>
       </body>
     </html>
   );
