@@ -1,10 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { GoogleGenAI } from '@google/genai';
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
-const geminiApiKey = process.env.GEMINI_API_KEY!;
-
 const JUDGE_PROMPT = `당신은 "AI 청렴 콘텐츠 공모전"의 전문 심사위원입니다.
 제출된 콘텐츠(이미지와 이미지 속에 포함된 텍스트/슬로건)를 종합적으로 분석하여 아래 심사기준에 따라 정확하게 평가해주세요.
 
@@ -50,9 +46,12 @@ const JUDGE_PROMPT = `당신은 "AI 청렴 콘텐츠 공모전"의 전문 심사
   "total_score": <0~100 정수>,
   "review_comment": "<한국어 심사평 2~3문장>"
 }`;
-
 export async function POST(request: Request) {
   try {
+    const supabaseUrl = process.env['NEXT_PUBLIC_SUPABASE_URL']!;
+    const supabaseAnonKey = process.env['NEXT_PUBLIC_SUPABASE_ANON_KEY']!;
+    const geminiApiKey = process.env['GEMINI_API_KEY'];
+
     // Verify auth
     const authHeader = request.headers.get('authorization');
     if (!authHeader) {
